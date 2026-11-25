@@ -39,6 +39,10 @@ export const DYNAMIC_EXPERIMENT_MODULES: Record<
     () => import("./g4-shadow-size/ExperimentModule"),
     { loading: () => <ExperimentLoadingFallback /> }
   ),
+  "sample-dissolution": dynamic(
+    () => import("./sample-dissolution/ExperimentModule"),
+    { loading: () => <ExperimentLoadingFallback /> }
+  ),
   "g5-dissolution-temp": dynamic(
     () => import("./g5-dissolution-temp/ExperimentModule"),
     { loading: () => <ExperimentLoadingFallback /> }

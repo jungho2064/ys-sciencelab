@@ -3,6 +3,7 @@ import { g3SpringWeightConfig } from "./g3-spring-weight/config";
 import { g4ShadowSizeConfig } from "./g4-shadow-size/config";
 import { g5DissolutionTempConfig } from "./g5-dissolution-temp/config";
 import { g6ElectromagnetConfig } from "./g6-electromagnet/config";
+import { sampleDissolutionConfig } from "./sample-dissolution/config";
 
 /**
  * 전체 실험 단원 플러그인 메타데이터 목록 (가벼운 순수 설정 객체)
@@ -12,6 +13,7 @@ import { g6ElectromagnetConfig } from "./g6-electromagnet/config";
 export const EXPERIMENT_CONFIGS: ExperimentConfig[] = [
   g3SpringWeightConfig,
   g4ShadowSizeConfig,
+  sampleDissolutionConfig,
   g5DissolutionTempConfig,
   g6ElectromagnetConfig,
 ];

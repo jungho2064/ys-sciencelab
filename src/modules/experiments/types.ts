@@ -87,6 +87,10 @@ export interface SimulationDataEntry {
   xValue: number;
   simulatedY: number;
   recordedAt: string;
+  solute?: string;
+  waterVolumeMl?: number;
+  spoons?: number;
+  excessSpoons?: number;
 }
 
 export type LabProgressStatus = "ready" | "measuring" | "completed";
