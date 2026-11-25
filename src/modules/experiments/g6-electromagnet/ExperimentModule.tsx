@@ -21,8 +21,18 @@ export default function G6ElectromagnetModule(props: ExperimentModuleProps) {
     const nextPoints = groupRecord.dataPoints.map((pt, i) =>
       i === idx ? { ...pt, yValue: val } : pt
     );
+    const nextSimLog = [
+      ...(groupRecord.simulationLog ?? []),
+      {
+        xValue: batteryCount,
+        simulatedY: val,
+        recordedAt: new Date().toISOString(),
+      },
+    ];
     onUpdateRecord({
       dataPoints: nextPoints,
+      simulationLog: nextSimLog,
+      revisionCount: (groupRecord.revisionCount ?? 0) + 1,
       status:
         groupRecord.status === "completed" ? "completed" : "measuring",
     });

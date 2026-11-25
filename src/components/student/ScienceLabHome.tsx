@@ -37,6 +37,7 @@ import type {
   ExperimentConfig,
   GradeLevel,
   GroupLabRecord,
+  GroupLabRecordPatch,
   StudentSession,
 } from "@/modules/experiments/types";
 import {
@@ -45,6 +46,7 @@ import {
   createInitialGroupRecord,
   fetchClassLabRecords,
   saveStudentSession,
+  subscribeToClassRealtimeLogs,
   upsertGroupLabRecord,
 } from "@/lib/lab-client";
 
@@ -199,6 +201,29 @@ export function ScienceLabHome() {
 
     loadLatest();
 
+    let unsubscribeRealtime: (() => void) | null = null;
+    void subscribeToClassRealtimeLogs({
+      experimentId: activeExperimentId,
+      grade: studentSession.grade,
+      classNum: studentSession.classNum,
+      onRecordUpsert: (incoming) => {
+        if (!cancelled && incoming.groupNum === studentSession.groupNum) {
+          setGroupRecord(incoming);
+        }
+      },
+      onRecordDelete: () => {
+        if (!cancelled) {
+          setGroupRecord(createInitialGroupRecord(cfg, studentSession));
+        }
+      },
+    }).then((cleanup) => {
+      if (cancelled) {
+        cleanup();
+      } else {
+        unsubscribeRealtime = cleanup;
+      }
+    });
+
     let ch: BroadcastChannel | null = null;
     if (typeof window !== "undefined" && "BroadcastChannel" in window) {
       ch = new BroadcastChannel(LAB_BROADCAST_CHANNEL);
@@ -209,6 +234,7 @@ export function ScienceLabHome() {
 
     return () => {
       cancelled = true;
+      unsubscribeRealtime?.();
       ch?.close();
     };
   }, [activeExperimentId, studentSession]);
@@ -242,27 +268,17 @@ export function ScienceLabHome() {
     setActiveExperimentId(cfg.id);
   };
 
-  const handleUpdateRecord = useCallback(
-    (
-      patch: Partial<
-        Pick<
-          GroupLabRecord,
-          "dataPoints" | "controlledCheckedIds" | "conclusion" | "status"
-        >
-      >
-    ) => {
-      setGroupRecord((prev) => {
-        if (!prev) return prev;
-        const updated: GroupLabRecord = {
-          ...prev,
-          ...patch,
-        };
-        void upsertGroupLabRecord(updated);
-        return updated;
-      });
-    },
-    []
-  );
+  const handleUpdateRecord = useCallback((patch: GroupLabRecordPatch) => {
+    setGroupRecord((prev) => {
+      if (!prev) return prev;
+      const updated: GroupLabRecord = {
+        ...prev,
+        ...patch,
+      };
+      void upsertGroupLabRecord(updated);
+      return updated;
+    });
+  }, []);
 
   const activeConfig = activeExperimentId
     ? getExperimentConfigById(activeExperimentId)

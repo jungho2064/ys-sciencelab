@@ -20,10 +20,18 @@
    - 회원가입이나 로그인 없이 **[학년 / 반 / 모둠(1~6모둠)]** 버튼만 선택해 즉시 입장합니다.
    - 실험 전 **통제변인 자가 점검 체크리스트**, **단원별 가상 실험 시뮬레이터**, **모둠 측정 기록표 & 실시간 Recharts 그래프(꺾은선/막대 전환)**, **규칙성 결론 제출** 기능을 제공합니다.
 
-3. **교사(전자칠판) 모드 (`/teacher`) — 실시간 학급 통합 대시보드**
-   - 전자칠판 터치 친화형 **관리자 PIN 키패드**로 입장합니다 (기본 PIN: `1234`, `.env.local`의 `NEXT_PUBLIC_TEACHER_PIN`으로 변경 가능).
-   - 전담 교사를 위한 **학년 · 반 · 단원 원클릭 전환 바**를 제공합니다.
-   - 우리 반 **1~6모둠 전체 통합 비교 그래프(+학급 평균선)**, 모둠별 통제변인 점검 현황, **모둠 발표용 크게 보기 모달**, **시연용 1~6모둠 예시 데이터 자동 채우기** 기능을 지원합니다.
+3. **교사(전자칠판) 모드 (`/teacher`) — 실시간 학급 통합 대시보드 & 연구대회 CSV 분석**
+   - 전자칠판 터치 친화형 **관리자 PIN 키패드**로 입장합니다 (`science_lab.classes.teacher_pin` 연동, 기본 PIN: `1234`).
+   - **Supabase Realtime (`science_lab.experiment_logs`)** 웹소켓 구독으로 모둠 태블릿에서 변인이나 측정값을 저장하는 즉시 새로고침 없이 비교 그래프가 자동 갱신됩니다.
+   - 연구대회 통계 분석을 위한 **[전체 실험 로그 CSV 다운로드]** 및 **[설문 로그 CSV 다운로드]** 버튼을 제공합니다 (UTF-8 BOM 적용으로 엑셀·한셀·SPSS 한글 깨짐 방지).
+
+---
+
+## 🗄️ Supabase 데이터베이스 구조 (`science_lab` 전용 스키마)
+
+- `science_lab.classes`: `id`, `grade`, `class_num`, `teacher_pin`, `created_at`
+- `science_lab.experiment_logs`: `id`, `class_id`, `experiment_slug`, `group_num`, `status`, `independent_var`(JSONB), `controlled_vars`(JSONB), `measured_data`(JSONB), `simulation_data`(JSONB), `ai_feedback_count`, `revision_count`, `conclusion`, `updated_at` (**Supabase Realtime 활성화**)
+- `science_lab.survey_logs`: `id`, `class_id`, `anon_student_code`, `survey_phase`, `experiment_slug`, `interest_score`, `inquiry_confidence_score`, `collaboration_score`, `responses`(JSONB), `reflection_text`, `created_at`
 
 ---
 

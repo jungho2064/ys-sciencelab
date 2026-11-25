@@ -7,12 +7,16 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  AlertCircle,
   BarChart3,
+  Bot,
   CheckCircle2,
   ClipboardCheck,
   Clock,
   Delete,
+  Download,
   Expand,
+  FileSpreadsheet,
   KeyRound,
   LineChart as LineChartIcon,
   Lock,
@@ -43,14 +47,19 @@ import {
 import type { GradeLevel, GroupLabRecord } from "@/modules/experiments/types";
 import {
   LAB_BROADCAST_CHANNEL,
+  downloadAllExperimentLogsCsv,
+  downloadAllSurveyLogsCsv,
   fetchClassLabRecords,
+  getSupabaseSchemaWarning,
   isTeacherAuthenticated,
   resetClassLabRecords,
   seedDemoClassRecords,
   setTeacherAuthenticated,
+  subscribeToClassRealtimeLogs,
+  verifyTeacherPinWithDb,
 } from "@/lib/lab-client";
 
-const TEACHER_PIN = process.env.NEXT_PUBLIC_TEACHER_PIN || "1234";
+const TEACHER_PIN_FALLBACK = process.env.NEXT_PUBLIC_TEACHER_PIN || "1234";
 const GRADES: GradeLevel[] = [3, 4, 5, 6];
 const CLASSES = [1, 2, 3, 4, 5, 6, 7, 8];
 const GROUPS = [1, 2, 3, 4, 5, 6];
@@ -88,6 +97,7 @@ export function TeacherDashboard() {
   );
   const [pinInput, setPinInput] = useState<string>("");
   const [pinError, setPinError] = useState<string>("");
+  const [verifyingPin, setVerifyingPin] = useState<boolean>(false);
 
   // 전담 교사용 학년 / 반 / 단원 필터 상태
   const [selectedGrade, setSelectedGrade] = useState<GradeLevel>(4);
@@ -97,6 +107,11 @@ export function TeacherDashboard() {
   );
 
   const [records, setRecords] = useState<GroupLabRecord[]>([]);
+  const [realtimeConnected, setRealtimeConnected] = useState<boolean>(false);
+  const [lastRealtimeTime, setLastRealtimeTime] = useState<string | null>(null);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [schemaWarning, setSchemaWarning] = useState<string | null>(null);
+
   const [chartType, setChartType] = useState<"line" | "bar">("line");
   const [confirmReset, setConfirmReset] = useState<boolean>(false);
   const [spotlightGroup, setSpotlightGroup] = useState<number | null>(null);
@@ -124,7 +139,7 @@ export function TeacherDashboard() {
     setConfirmReset(false);
   };
 
-  // 주기적 실시간 폴링 (1.5초) + BroadcastChannel 즉시 동기화
+  // 초기 조회 + Supabase Realtime(WebSocket) 즉시 반영 + 보조 BroadcastChannel 구독
   useEffect(() => {
     if (!authenticated || !activeConfig) return;
     let cancelled = false;
@@ -137,12 +152,52 @@ export function TeacherDashboard() {
       ).then((list) => {
         if (!cancelled) {
           setRecords(list);
+          setSchemaWarning(getSupabaseSchemaWarning());
         }
       });
     };
 
     refresh();
-    const timer = window.setInterval(refresh, 1500);
+
+    let unsubscribeRealtime: (() => void) | null = null;
+    void subscribeToClassRealtimeLogs({
+      experimentId: activeConfig.id,
+      grade: selectedGrade,
+      classNum: selectedClass,
+      onRecordUpsert: (incoming) => {
+        if (cancelled) return;
+        setRecords((prev) => {
+          const filtered = prev.filter(
+            (item) => item.groupNum !== incoming.groupNum
+          );
+          return [...filtered, incoming].sort(
+            (a, b) => a.groupNum - b.groupNum
+          );
+        });
+        setLastRealtimeTime(
+          new Date().toLocaleTimeString("ko-KR", { hour12: false })
+        );
+      },
+      onRecordDelete: () => {
+        if (!cancelled) {
+          refresh();
+          setLastRealtimeTime(
+            new Date().toLocaleTimeString("ko-KR", { hour12: false })
+          );
+        }
+      },
+      onConnectionChange: (connected) => {
+        if (!cancelled) {
+          setRealtimeConnected(connected);
+        }
+      },
+    }).then((cleanup) => {
+      if (cancelled) {
+        cleanup();
+      } else {
+        unsubscribeRealtime = cleanup;
+      }
+    });
 
     let ch: BroadcastChannel | null = null;
     if (typeof window !== "undefined" && "BroadcastChannel" in window) {
@@ -154,13 +209,22 @@ export function TeacherDashboard() {
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      unsubscribeRealtime?.();
       ch?.close();
     };
   }, [authenticated, activeConfig, selectedGrade, selectedClass]);
 
-  const verifyPin = (candidate: string) => {
-    if (candidate === TEACHER_PIN) {
+  const verifyPin = async (candidate: string) => {
+    if (!candidate) return;
+    setVerifyingPin(true);
+    const ok = await verifyTeacherPinWithDb(
+      selectedGrade,
+      selectedClass,
+      candidate
+    );
+    setVerifyingPin(false);
+
+    if (ok) {
       setTeacherAuthenticated(true);
       window.dispatchEvent(new Event(TEACHER_AUTH_EVENT));
       setPinError("");
@@ -175,8 +239,11 @@ export function TeacherDashboard() {
     setPinError("");
     const next = (pinInput + digit).slice(0, 6);
     setPinInput(next);
-    if (next.length === TEACHER_PIN.length && next === TEACHER_PIN) {
-      verifyPin(next);
+    if (
+      next.length === TEACHER_PIN_FALLBACK.length &&
+      next === TEACHER_PIN_FALLBACK
+    ) {
+      void verifyPin(next);
     }
   };
 
@@ -187,6 +254,7 @@ export function TeacherDashboard() {
       selectedClass
     );
     setRecords(seeded);
+    setSchemaWarning(getSupabaseSchemaWarning());
     setConfirmReset(false);
   };
 
@@ -198,6 +266,22 @@ export function TeacherDashboard() {
     await resetClassLabRecords(activeConfig.id, selectedGrade, selectedClass);
     setRecords([]);
     setConfirmReset(false);
+  };
+
+  const handleExportExperimentCsv = async () => {
+    const { count } = await downloadAllExperimentLogsCsv();
+    setExportNotice(
+      `📥 전체 실험 로그 ${count}건을 CSV 파일로 다운로드했습니다.`
+    );
+    window.setTimeout(() => setExportNotice(null), 4000);
+  };
+
+  const handleExportSurveyCsv = async () => {
+    const { count } = await downloadAllSurveyLogsCsv();
+    setExportNotice(
+      `📋 익명 설문·소감 로그 ${count}건을 CSV 파일로 다운로드했습니다.`
+    );
+    window.setTimeout(() => setExportNotice(null), 4000);
   };
 
   // 모둠 번호 -> 기록 매핑
@@ -276,7 +360,7 @@ export function TeacherDashboard() {
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                verifyPin(pinInput);
+                void verifyPin(pinInput);
               }}
               className="mt-6"
             >
@@ -336,15 +420,16 @@ export function TeacherDashboard() {
 
               <button
                 type="submit"
-                className="mt-5 w-full rounded-2xl bg-amber-400 py-3.5 text-base font-black text-slate-950 shadow-md transition hover:bg-amber-300"
+                disabled={verifyingPin}
+                className="mt-5 w-full rounded-2xl bg-amber-400 py-3.5 text-base font-black text-slate-950 shadow-md transition hover:bg-amber-300 disabled:opacity-60"
               >
-                전자칠판 대시보드 열기
+                {verifyingPin ? "PIN 확인 중..." : "전자칠판 대시보드 열기"}
               </button>
             </form>
 
             <p className="mt-4 text-center text-xs text-slate-500">
-              초기 설정 PIN: <code className="text-slate-300">1234</code> (환경변수{" "}
-              <code>NEXT_PUBLIC_TEACHER_PIN</code>으로 변경 가능)
+              초기 설정 PIN: <code className="text-slate-300">1234</code> (
+              <code>science_lab.classes.teacher_pin</code> 연동)
             </p>
           </div>
         </main>
@@ -360,15 +445,41 @@ export function TeacherDashboard() {
       <AppHeader mode="teacher" />
 
       <main className="mx-auto w-full max-w-7xl flex-1 space-y-6 px-4 py-6 sm:px-6">
-        {/* 상단 컨트롤 바: 전담 수업용 학년 / 반 / 단원 전환 + 시연 도구 */}
+        {schemaWarning && (
+          <div className="flex items-center gap-2.5 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-900">
+            <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" />
+            <span>{schemaWarning}</span>
+          </div>
+        )}
+
+        {exportNotice && (
+          <div className="rounded-2xl bg-emerald-600 px-4 py-3 text-center text-sm font-extrabold text-white shadow-sm">
+            {exportNotice}
+          </div>
+        )}
+
+        {/* 상단 컨트롤 바: 전담 수업용 학년 / 반 / 단원 전환 + 연구대회 CSV 다운로드 + 시연 도구 */}
         <section className="rounded-3xl border border-slate-200 bg-slate-900 p-5 text-white shadow-lg sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-extrabold text-emerald-300 ring-1 ring-emerald-400/40">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-extrabold ring-1 ${
+                  realtimeConnected
+                    ? "bg-emerald-500/20 text-emerald-300 ring-emerald-400/40"
+                    : "bg-sky-500/20 text-sky-300 ring-sky-400/40"
+                }`}
+              >
                 <Radio className="h-3.5 w-3.5 animate-pulse" />
-                실시간 전자칠판 연동 중
+                {realtimeConnected
+                  ? "Supabase Realtime 실시간 구독 중 (science_lab)"
+                  : "실시간 채널 연결 중"}
               </span>
-              <span className="text-sm font-bold text-slate-300">
+              {lastRealtimeTime && (
+                <span className="rounded-full bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-emerald-300">
+                  최근 수신: {lastRealtimeTime}
+                </span>
+              )}
+              <span className="text-xs font-bold text-slate-300 sm:text-sm">
                 성취기준 {activeConfig.achievementStandard.code} ·{" "}
                 {activeConfig.unitName}
               </span>
@@ -377,7 +488,23 @@ export function TeacherDashboard() {
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={handleSeedDemo}
+                onClick={() => void handleExportExperimentCsv()}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-3.5 py-2 text-xs font-black text-white shadow-xs transition hover:bg-emerald-400"
+              >
+                <Download className="h-3.5 w-3.5" />
+                전체 실험 로그 CSV 다운로드
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleExportSurveyCsv()}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 text-xs font-extrabold text-emerald-200 transition hover:bg-emerald-500/25"
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" />
+                설문 로그 CSV
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSeedDemo()}
                 className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3.5 py-2 text-xs font-black text-slate-950 transition hover:bg-amber-300"
               >
                 <Sparkles className="h-3.5 w-3.5" />
@@ -385,7 +512,7 @@ export function TeacherDashboard() {
               </button>
               <button
                 type="button"
-                onClick={handleResetClass}
+                onClick={() => void handleResetClass()}
                 className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-extrabold transition ${
                   confirmReset
                     ? "bg-rose-600 text-white"
@@ -541,7 +668,7 @@ export function TeacherDashboard() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-xl font-black text-slate-900 sm:text-2xl">
-                📈 {selectedGrade}학년 {selectedClass}반 전체 모둠 통합 실험 그래프
+                📈 {selectedGrade}학년 {selectedClass}반 전체 모둠 실시간 통합 그래프
               </h2>
               <p className="mt-0.5 text-sm text-slate-500">
                 실험 주제: <strong>{activeConfig.title}</strong> · 가로축:{" "}
@@ -587,8 +714,8 @@ export function TeacherDashboard() {
                   아직 {selectedGrade}학년 {selectedClass}반 모둠에서 입력된 측정값이 없습니다.
                 </p>
                 <p className="mt-1 text-sm text-slate-500">
-                  학생들이 태블릿에서 값을 입력하거나 상단의{" "}
-                  <strong>[시연용 1~6모둠 예시 채우기]</strong> 버튼을 누르면 즉시 그래프가 나타납니다!
+                  모둠 태블릿에서 값을 저장하거나 상단의{" "}
+                  <strong>[시연용 1~6모둠 예시 채우기]</strong> 버튼을 누르면 새로고침 없이 즉시 그래프가 그려집니다!
                 </p>
               </div>
             ) : (
@@ -665,7 +792,7 @@ export function TeacherDashboard() {
         <section className="space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-black text-slate-900">
-              👥 1~6모둠별 실시간 탐구 현황 및 결론
+              👥 1~6모둠별 실시간 탐구 현황 및 연구 분석 지표
             </h2>
             <span className="text-xs font-semibold text-slate-500">
               모둠 카드를 누르면 전자칠판 발표용 크게 보기 창이 열립니다.
@@ -701,7 +828,8 @@ export function TeacherDashboard() {
                           {groupNum}모둠
                         </h3>
                         <span className="text-[11px] font-bold text-slate-500">
-                          통제변인 {checkedVars}/{totalVars} 점검
+                          통제변인 {checkedVars}/{totalVars} · 수정{" "}
+                          {rec?.revisionCount ?? 0}회
                         </span>
                       </div>
                     </div>
@@ -726,8 +854,19 @@ export function TeacherDashboard() {
                     </div>
                   </div>
 
+                  {/* 연구대회 로그 요약 태그 */}
+                  <div className="mt-2.5 flex flex-wrap gap-1.5 text-[11px] font-bold">
+                    <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2 py-0.5 text-indigo-700">
+                      <Bot className="h-3 w-3" />
+                      AI 코칭 {rec?.aiFeedbackCount ?? 0}회
+                    </span>
+                    <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-600">
+                      가상실험 {rec?.simulationLog?.length ?? 0}회
+                    </span>
+                  </div>
+
                   {/* 측정값 요약 칩 */}
-                  <div className="mt-4 grid grid-cols-3 gap-1.5 sm:grid-cols-5">
+                  <div className="mt-3 grid grid-cols-3 gap-1.5 sm:grid-cols-5">
                     {indep.presetValues.map((xVal) => {
                       const pt = rec?.dataPoints.find((d) => d.xValue === xVal);
                       const hasVal =
@@ -762,7 +901,7 @@ export function TeacherDashboard() {
                   {/* 모둠 결론 요약 */}
                   <div className="mt-3.5 rounded-2xl bg-slate-50 p-3 text-xs">
                     {rec?.conclusion ? (
-                      <p className="font-semibold text-slate-800 line-clamp-2">
+                      <p className="line-clamp-2 font-semibold text-slate-800">
                         💬 &ldquo;{rec.conclusion}&rdquo;
                       </p>
                     ) : (
@@ -797,7 +936,9 @@ export function TeacherDashboard() {
                     {selectedGrade}학년 {selectedClass}반 {spotlightGroup}모둠 탐구 발표
                   </h3>
                   <p className="text-sm font-medium text-slate-500">
-                    {activeConfig.title}
+                    {activeConfig.title} · 변인 수정{" "}
+                    {spotlightRecord?.revisionCount ?? 0}회 · AI 코칭{" "}
+                    {spotlightRecord?.aiFeedbackCount ?? 0}회
                   </p>
                 </div>
               </div>
@@ -814,9 +955,9 @@ export function TeacherDashboard() {
               <table className="w-full text-center text-sm">
                 <thead className="bg-slate-100 font-extrabold text-slate-700">
                   <tr>
-                    <th className="py-2.5 px-3">조작변인 단계</th>
+                    <th className="px-3 py-2.5">조작변인 단계</th>
                     {indep.presetValues.map((v) => (
-                      <th key={v} className="py-2.5 px-3">
+                      <th key={v} className="px-3 py-2.5">
                         {v}
                         {indep.unit}
                       </th>
@@ -825,7 +966,7 @@ export function TeacherDashboard() {
                 </thead>
                 <tbody>
                   <tr className="border-t border-slate-200 font-black text-slate-900">
-                    <td className="bg-slate-50 py-3 px-3 text-xs font-bold text-slate-600">
+                    <td className="bg-slate-50 px-3 py-3 text-xs font-bold text-slate-600">
                       {activeConfig.dependentVariable.name}
                     </td>
                     {indep.presetValues.map((v) => {
@@ -833,7 +974,7 @@ export function TeacherDashboard() {
                         (d) => d.xValue === v
                       );
                       return (
-                        <td key={v} className="py-3 px-3 text-base">
+                        <td key={v} className="px-3 py-3 text-base">
                           {pt?.yValue !== null && pt?.yValue !== undefined
                             ? `${pt.yValue}${activeConfig.dependentVariable.unit}`
                             : "-"}

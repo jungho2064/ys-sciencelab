@@ -185,6 +185,9 @@ export async function POST(request: Request) {
         status: isCompleted ? "completed" : "measuring",
         controlledCheckedIds: checkedIds,
         dataPoints,
+        simulationLog: [],
+        aiFeedbackCount: 0,
+        revisionCount: 0,
         conclusion: isCompleted
           ? conclusions[(groupNum - 1) % conclusions.length]
           : "",

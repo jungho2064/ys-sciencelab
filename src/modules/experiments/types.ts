@@ -83,15 +83,25 @@ export interface ExperimentDataPoint {
   yValue: number | null;
 }
 
+export interface SimulationDataEntry {
+  xValue: number;
+  simulatedY: number;
+  recordedAt: string;
+}
+
 export type LabProgressStatus = "ready" | "measuring" | "completed";
 
 export interface StudentSession {
   grade: GradeLevel;
-  classNum: number; // 1~10반
+  classNum: number; // 1~20반
   groupNum: number; // 1~6모둠
 }
 
 export interface GroupLabRecord {
+  /** DB row UUID (Supabase 연동 시 채워짐) */
+  id?: string;
+  /** science_lab.classes.id */
+  classId?: string;
   /** 고유 키: `${experimentId}__g${grade}-c${classNum}-m${groupNum}` */
   recordKey: string;
   experimentId: string;
@@ -101,25 +111,94 @@ export interface GroupLabRecord {
   status: LabProgressStatus;
   controlledCheckedIds: string[];
   dataPoints: ExperimentDataPoint[];
+  /** 가상 실험 시뮬레이터 조작 이력 (simulation_data JSON) */
+  simulationLog: SimulationDataEntry[];
+  /** AI 탐구 코칭 사용 횟수 (연구대회 분석용) */
+  aiFeedbackCount: number;
+  /** 변인·측정값 수정 횟수 (연구대회 분석용) */
+  revisionCount: number;
   conclusion: string;
   updatedAt: string;
 }
+
+export type GroupLabRecordPatch = Partial<
+  Pick<
+    GroupLabRecord,
+    | "dataPoints"
+    | "controlledCheckedIds"
+    | "simulationLog"
+    | "aiFeedbackCount"
+    | "revisionCount"
+    | "conclusion"
+    | "status"
+  >
+>;
 
 export interface ExperimentModuleProps {
   config: ExperimentConfig;
   studentSession: StudentSession;
   groupRecord: GroupLabRecord;
-  onUpdateRecord: (
-    patch: Partial<
-      Pick<
-        GroupLabRecord,
-        "dataPoints" | "controlledCheckedIds" | "conclusion" | "status"
-      >
-    >
-  ) => void;
+  onUpdateRecord: (patch: GroupLabRecordPatch) => void;
 }
 
 export interface RegisteredExperimentPlugin {
   config: ExperimentConfig;
   Component: ComponentType<ExperimentModuleProps>;
+}
+
+/** Supabase `science_lab.classes` 테이블 행 타입 */
+export interface DbClassRow {
+  id: string;
+  grade: number;
+  class_num: number;
+  teacher_pin: string;
+  created_at: string;
+}
+
+/** Supabase `science_lab.controlled_vars` JSON 항목 타입 */
+export interface DbControlledVarJson {
+  id: string;
+  name: string;
+  fixedValue: string;
+  checked: boolean;
+}
+
+/** Supabase `science_lab.independent_var` JSON 타입 */
+export interface DbIndependentVarJson {
+  id: string;
+  name: string;
+  unit: string;
+  presetValues: number[];
+}
+
+/** Supabase `science_lab.experiment_logs` 테이블 행 타입 */
+export interface DbExperimentLogRow {
+  id: string;
+  class_id: string;
+  experiment_slug: string;
+  group_num: number;
+  status: LabProgressStatus;
+  independent_var: DbIndependentVarJson;
+  controlled_vars: DbControlledVarJson[];
+  measured_data: ExperimentDataPoint[];
+  simulation_data: SimulationDataEntry[];
+  ai_feedback_count: number;
+  revision_count: number;
+  conclusion: string;
+  updated_at: string;
+}
+
+/** Supabase `science_lab.survey_logs` 테이블 행 타입 */
+export interface DbSurveyLogRow {
+  id: string;
+  class_id: string | null;
+  anon_student_code: string;
+  survey_phase: "pre" | "post" | "reflection";
+  experiment_slug: string | null;
+  interest_score: number | null;
+  inquiry_confidence_score: number | null;
+  collaboration_score: number | null;
+  responses: Record<string, unknown>;
+  reflection_text: string;
+  created_at: string;
 }

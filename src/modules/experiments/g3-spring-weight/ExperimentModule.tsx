@@ -21,8 +21,18 @@ export default function G3SpringWeightModule(props: ExperimentModuleProps) {
     const nextPoints = groupRecord.dataPoints.map((pt, i) =>
       i === idx ? { ...pt, yValue: stretchedCm } : pt
     );
+    const nextSimLog = [
+      ...(groupRecord.simulationLog ?? []),
+      {
+        xValue: weightCount,
+        simulatedY: stretchedCm,
+        recordedAt: new Date().toISOString(),
+      },
+    ];
     onUpdateRecord({
       dataPoints: nextPoints,
+      simulationLog: nextSimLog,
+      revisionCount: (groupRecord.revisionCount ?? 0) + 1,
       status:
         groupRecord.status === "completed" ? "completed" : "measuring",
     });

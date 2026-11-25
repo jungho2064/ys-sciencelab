@@ -19,8 +19,18 @@ export default function G4ShadowSizeModule(props: ExperimentModuleProps) {
     const nextPoints = groupRecord.dataPoints.map((pt, i) =>
       i === idx ? { ...pt, yValue: shadowSizeCm } : pt
     );
+    const nextSimLog = [
+      ...(groupRecord.simulationLog ?? []),
+      {
+        xValue: distanceCm,
+        simulatedY: shadowSizeCm,
+        recordedAt: new Date().toISOString(),
+      },
+    ];
     onUpdateRecord({
       dataPoints: nextPoints,
+      simulationLog: nextSimLog,
+      revisionCount: (groupRecord.revisionCount ?? 0) + 1,
       status:
         groupRecord.status === "completed" ? "completed" : "measuring",
     });

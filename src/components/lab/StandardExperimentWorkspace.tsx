@@ -4,14 +4,18 @@ import { useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   BarChart3,
+  Bot,
   CheckCircle2,
   ClipboardCheck,
+  CloudUpload,
   Lightbulb,
   LineChart as LineChartIcon,
+  MessageSquareHeart,
   RotateCcw,
   Send,
   Sliders,
   Sparkles,
+  Star,
 } from "lucide-react";
 import {
   Bar,
@@ -29,6 +33,7 @@ import type {
   LabProgressStatus,
   ThemeColor,
 } from "@/modules/experiments/types";
+import { submitStudentSurveyLog } from "@/lib/lab-client";
 
 interface StandardExperimentWorkspaceProps extends ExperimentModuleProps {
   /** 각 단원 플러그인 고유 가상 실험 시뮬레이터 영역 */
@@ -98,6 +103,24 @@ export function StandardExperimentWorkspace({
     config.dependentVariable.chartType
   );
   const [submitBanner, setSubmitBanner] = useState(false);
+  const [aiCoachingMessage, setAiCoachingMessage] = useState<string | null>(
+    null
+  );
+
+  // 연구대회용 익명 설문·소감 입력 상태 (science_lab.survey_logs)
+  const [anonCode, setAnonCode] = useState<string>(
+    `G${studentSession.grade}C${studentSession.classNum}-M${studentSession.groupNum}-`
+  );
+  const [surveyPhase, setSurveyPhase] = useState<"pre" | "post" | "reflection">(
+    "reflection"
+  );
+  const [interestScore, setInterestScore] = useState<number>(5);
+  const [confidenceScore, setConfidenceScore] = useState<number>(5);
+  const [collabScore, setCollabScore] = useState<number>(5);
+  const [reflectionText, setReflectionText] = useState<string>("");
+  const [surveySubmittedMsg, setSurveySubmittedMsg] = useState<string | null>(
+    null
+  );
 
   const allControlledChecked =
     config.controlledVariables.length > 0 &&
@@ -124,6 +147,7 @@ export function StandardExperimentWorkspace({
 
     onUpdateRecord({
       controlledCheckedIds: nextIds,
+      revisionCount: (groupRecord.revisionCount ?? 0) + 1,
       status: nextStatus,
     });
   };
@@ -146,18 +170,30 @@ export function StandardExperimentWorkspace({
 
     onUpdateRecord({
       dataPoints: nextPoints,
+      revisionCount: (groupRecord.revisionCount ?? 0) + 1,
       status: nextStatus,
     });
   };
 
   const handleFillSimulated = () => {
+    const nowIso = new Date().toISOString();
     const nextPoints = groupRecord.dataPoints.map((pt) => ({
       ...pt,
       yValue: config.simulateValue(pt.xValue),
     }));
+    const nextSimLog = [
+      ...(groupRecord.simulationLog ?? []),
+      ...groupRecord.dataPoints.map((pt) => ({
+        xValue: pt.xValue,
+        simulatedY: config.simulateValue(pt.xValue),
+        recordedAt: nowIso,
+      })),
+    ];
     onUpdateRecord({
       dataPoints: nextPoints,
+      simulationLog: nextSimLog,
       controlledCheckedIds: config.controlledVariables.map((c) => c.id),
+      revisionCount: (groupRecord.revisionCount ?? 0) + 1,
       status:
         groupRecord.status === "completed" ? "completed" : "measuring",
     });
@@ -171,9 +207,35 @@ export function StandardExperimentWorkspace({
     onUpdateRecord({
       dataPoints: nextPoints,
       conclusion: "",
+      revisionCount: (groupRecord.revisionCount ?? 0) + 1,
       status: "ready",
     });
     setSubmitBanner(false);
+    setAiCoachingMessage(null);
+  };
+
+  const handleRequestAiCoaching = () => {
+    const unchecked = config.controlledVariables.filter(
+      (cv) => !groupRecord.controlledCheckedIds.includes(cv.id)
+    );
+    let feedback = "";
+
+    if (unchecked.length > 0) {
+      feedback = `🔍 공정한 실험을 위해 아직 확인하지 않은 통제변인(${unchecked
+        .map((u) => u.name)
+        .join(", ")})부터 모둠 친구들과 점검해 볼까요?`;
+    } else if (filledCount < 2) {
+      feedback = `👍 통제변인을 모두 완벽하게 지켰네요! 이제 조작변인(${indep.name})을 다르게 하며 최소 2단계 이상 측정값을 기록해 보세요.`;
+    } else if (!groupRecord.conclusion.trim()) {
+      feedback = `📊 그래프의 모양을 살펴보세요! ${indep.name}(${indep.unit})이 변할 때 ${config.dependentVariable.name}(${config.dependentVariable.unit})이 어떻게 달라지는지 아래 결론 칸에 한 문장으로 정리해 볼까요?`;
+    } else {
+      feedback = `🌟 훌륭해요! 변인 통제, 단계별 측정, 규칙성 결론까지 과학자처럼 체계적으로 완성했어요! 다른 모둠 그래프와도 비교해 보세요.`;
+    }
+
+    setAiCoachingMessage(feedback);
+    onUpdateRecord({
+      aiFeedbackCount: (groupRecord.aiFeedbackCount ?? 0) + 1,
+    });
   };
 
   const handleCompleteSubmit = () => {
@@ -182,6 +244,36 @@ export function StandardExperimentWorkspace({
     });
     setSubmitBanner(true);
     window.setTimeout(() => setSubmitBanner(false), 3500);
+  };
+
+  const handleSurveySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (anonCode.trim().length < 2) {
+      setSurveySubmittedMsg("익명 번호(예: 출석번호 2자리)를 입력해 주세요.");
+      return;
+    }
+    const result = await submitStudentSurveyLog({
+      grade: studentSession.grade,
+      classNum: studentSession.classNum,
+      anonStudentCode: anonCode.trim(),
+      surveyPhase,
+      experimentSlug: config.id,
+      interestScore,
+      inquiryConfidenceScore: confidenceScore,
+      collaborationScore: collabScore,
+      reflectionText,
+    });
+
+    if (result.ok) {
+      setSurveySubmittedMsg(
+        "✅ 소중한 탐구 설문과 소감이 익명 코드로 안전하게 저장되었어요!"
+      );
+      setReflectionText("");
+    } else {
+      setSurveySubmittedMsg(
+        `⚠️ 저장 중 안내: ${result.errorMessage ?? "다시 시도해 주세요."}`
+      );
+    }
   };
 
   const chartData = groupRecord.dataPoints.map((pt) => ({
@@ -205,9 +297,16 @@ export function StandardExperimentWorkspace({
               성취기준 {config.achievementStandard.code}
             </span>
           </div>
-          <div className="rounded-2xl bg-white/20 px-4 py-1.5 text-sm font-bold backdrop-blur-xs">
-            {studentSession.grade}학년 {studentSession.classNum}반{" "}
-            {studentSession.groupNum}모둠 실험 중
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-2xl bg-black/20 px-3 py-1.5 text-xs font-bold backdrop-blur-xs">
+              <CloudUpload className="h-3.5 w-3.5" />
+              실시간 자동 저장 (수정 {groupRecord.revisionCount ?? 0}회 · 코칭{" "}
+              {groupRecord.aiFeedbackCount ?? 0}회)
+            </span>
+            <div className="rounded-2xl bg-white/20 px-4 py-1.5 text-sm font-bold backdrop-blur-xs">
+              {studentSession.grade}학년 {studentSession.classNum}반{" "}
+              {studentSession.groupNum}모둠
+            </div>
           </div>
         </div>
 
@@ -262,7 +361,7 @@ export function StandardExperimentWorkspace({
             {config.independentVariables.map((iv) => (
               <div
                 key={iv.id}
-                className="rounded-2xl bg-slate-50 p-4 border border-slate-200/80"
+                className="rounded-2xl border border-slate-200/80 bg-slate-50 p-4"
               >
                 <div className="flex items-baseline justify-between">
                   <span className="text-lg font-extrabold text-slate-900">
@@ -349,7 +448,7 @@ export function StandardExperimentWorkspace({
                   <div className="flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-bold text-slate-900">{cv.name}</span>
-                      <span className="rounded-md bg-white px-2 py-0.5 text-xs font-semibold text-emerald-700 border border-emerald-200">
+                      <span className="rounded-md border border-emerald-200 bg-white px-2 py-0.5 text-xs font-semibold text-emerald-700">
                         기준: {cv.fixedValue}
                       </span>
                     </div>
@@ -379,7 +478,7 @@ export function StandardExperimentWorkspace({
                 📝 우리 모둠 실험 기록장
               </h3>
               <p className="text-xs text-slate-500">
-                측정한 숫자를 입력하면 오른쪽 그래프와 선생님 전자칠판에 바로 나타나요!
+                값을 입력하는 즉시 선생님 전자칠판 비교 그래프에 실시간 반영돼요!
               </p>
             </div>
             <div className="flex items-center gap-1.5">
@@ -412,7 +511,8 @@ export function StandardExperimentWorkspace({
                     {indep.name} ({indep.unit})
                   </th>
                   <th className="py-3 pl-2 pr-4">
-                    {config.dependentVariable.name} ({config.dependentVariable.unit})
+                    {config.dependentVariable.name} (
+                    {config.dependentVariable.unit})
                   </th>
                 </tr>
               </thead>
@@ -434,7 +534,9 @@ export function StandardExperimentWorkspace({
                           inputMode="decimal"
                           placeholder="측정값 입력"
                           value={pt.yValue === null ? "" : pt.yValue}
-                          onChange={(e) => handleValueChange(idx, e.target.value)}
+                          onChange={(e) =>
+                            handleValueChange(idx, e.target.value)
+                          }
                           className="w-full rounded-xl border-2 border-slate-200 bg-white px-3.5 py-2 text-base font-extrabold text-slate-900 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                         />
                         <span className="shrink-0 text-xs font-bold text-slate-500">
@@ -567,14 +669,30 @@ export function StandardExperimentWorkspace({
         </div>
       </section>
 
-      {/* 5. 우리 모둠 실험 결론 정리 및 제출 */}
+      {/* 5. AI 탐구 코칭 + 우리 모둠 실험 결론 정리 및 제출 */}
       <section className="rounded-3xl border-2 border-indigo-200 bg-white p-5 shadow-xs sm:p-6">
-        <div className="flex items-start gap-3 rounded-2xl bg-indigo-50/80 p-4">
-          <Lightbulb className="mt-0.5 h-5 w-5 shrink-0 text-indigo-600" />
-          <p className="text-sm font-semibold text-indigo-900">
-            💡 탐구 힌트: {config.inquiryTip}
-          </p>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-indigo-50/80 p-4">
+          <div className="flex items-start gap-3">
+            <Lightbulb className="mt-0.5 h-5 w-5 shrink-0 text-indigo-600" />
+            <p className="text-sm font-semibold text-indigo-900">
+              💡 탐구 힌트: {config.inquiryTip}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleRequestAiCoaching}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-extrabold text-white shadow-2xs transition hover:bg-indigo-700"
+          >
+            <Bot className="h-4 w-4" />
+            AI 탐구 코칭 받기 ({groupRecord.aiFeedbackCount ?? 0}회)
+          </button>
         </div>
+
+        {aiCoachingMessage && (
+          <div className="mt-3 rounded-2xl border border-indigo-200 bg-indigo-50/40 p-4 text-sm font-bold text-indigo-950">
+            🤖 AI 코칭 피드백: {aiCoachingMessage}
+          </div>
+        )}
 
         <div className="mt-4">
           <label
@@ -606,7 +724,7 @@ export function StandardExperimentWorkspace({
             {groupRecord.status === "completed" ? (
               <span className="inline-flex items-center gap-1.5 font-extrabold text-emerald-600">
                 <CheckCircle2 className="h-4 w-4" />
-                선생님 전자칠판에 실험 완료 상태로 전송되었습니다! (수정하면 자동 반영)
+                선생님 전자칠판(Supabase Realtime)에 실험 완료 상태로 전송되었습니다!
               </span>
             ) : (
               <span>
@@ -622,16 +740,147 @@ export function StandardExperimentWorkspace({
           >
             <Send className="h-4 w-4" />
             {groupRecord.status === "completed"
-              ? "실험 결과 다시 보내기"
+              ? "실험 결과 다시 저장하기"
               : "실험 완료! 선생님 칠판으로 보내기"}
           </button>
         </div>
 
         {submitBanner && (
           <div className="mt-3 rounded-2xl bg-emerald-500 px-4 py-2.5 text-center text-sm font-extrabold text-white shadow-xs">
-            🎉 짝짝짝! {studentSession.groupNum}모둠의 실험 그래프와 결론이 전자칠판에 멋지게 도착했어요!
+            🎉 짝짝짝! {studentSession.groupNum}모둠의 실험 그래프와 결론이 전자칠판에 실시간 반영되었어요!
           </div>
         )}
+      </section>
+
+      {/* 6. 연구대회용 익명 사전·사후 설문 및 학생 소감 카드 (science_lab.survey_logs) */}
+      <section className="rounded-3xl border-2 border-slate-200 bg-white p-5 shadow-xs sm:p-6">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-xl bg-rose-100 px-3 py-1 text-sm font-extrabold text-rose-800">
+            <MessageSquareHeart className="h-4 w-4" />
+            익명 과학 탐구 설문 & 오늘 실험 소감 남기기
+          </span>
+          <span className="text-xs font-semibold text-slate-400">
+            이름 대신 익명 코드로 안전하게 저장됩니다
+          </span>
+        </div>
+
+        <form onSubmit={handleSurveySubmit} className="mt-4 space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="block text-xs font-extrabold text-slate-600">
+                나의 익명 코드 (예: G4C1-M1-07)
+              </label>
+              <input
+                type="text"
+                value={anonCode}
+                onChange={(e) => setAnonCode(e.target.value)}
+                placeholder="익명 번호 또는 별명 코드"
+                className="mt-1 w-full rounded-xl border-2 border-slate-200 px-3.5 py-2 text-sm font-bold text-slate-900 outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-extrabold text-slate-600">
+                설문 구분
+              </label>
+              <div className="mt-1 grid grid-cols-3 gap-1.5">
+                {(
+                  [
+                    { key: "pre", label: "사전 설문" },
+                    { key: "reflection", label: "수업 소감" },
+                    { key: "post", label: "사후 설문" },
+                  ] as const
+                ).map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setSurveyPhase(item.key)}
+                    className={`rounded-xl py-2 text-xs font-extrabold transition ${
+                      surveyPhase === item.key
+                        ? "bg-slate-900 text-white"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            {[
+              {
+                label: "과학 실험 흥미도",
+                value: interestScore,
+                setter: setInterestScore,
+              },
+              {
+                label: "변인 통제 자신감",
+                value: confidenceScore,
+                setter: setConfidenceScore,
+              },
+              {
+                label: "모둠 친구와 협력",
+                value: collabScore,
+                setter: setCollabScore,
+              },
+            ].map((metric) => (
+              <div
+                key={metric.label}
+                className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3"
+              >
+                <div className="text-xs font-extrabold text-slate-700">
+                  {metric.label}
+                </div>
+                <div className="mt-2 flex items-center gap-1">
+                  {[1, 2, 3, 4, 5].map((score) => (
+                    <button
+                      key={score}
+                      type="button"
+                      onClick={() => metric.setter(score)}
+                      className="p-0.5"
+                      aria-label={`${metric.label} ${score}점`}
+                    >
+                      <Star
+                        className={`h-6 w-6 transition ${
+                          score <= metric.value
+                            ? "fill-amber-400 text-amber-400"
+                            : "text-slate-300"
+                        }`}
+                      />
+                    </button>
+                  ))}
+                  <span className="ml-auto text-xs font-black text-slate-700">
+                    {metric.value}점
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              type="text"
+              value={reflectionText}
+              onChange={(e) => setReflectionText(e.target.value)}
+              placeholder="오늘 실험을 하며 새롭게 알게 된 점이나 느낀 점을 적어 보세요!"
+              className="flex-1 rounded-xl border-2 border-slate-200 px-3.5 py-2.5 text-sm font-medium text-slate-900 outline-none focus:border-indigo-500"
+            />
+            <button
+              type="submit"
+              className="rounded-xl bg-rose-500 px-5 py-2.5 text-sm font-extrabold text-white shadow-xs transition hover:bg-rose-600"
+            >
+              익명 소감 제출하기
+            </button>
+          </div>
+
+          {surveySubmittedMsg && (
+            <p className="text-xs font-extrabold text-emerald-700">
+              {surveySubmittedMsg}
+            </p>
+          )}
+        </form>
       </section>
     </div>
   );

@@ -27,8 +27,18 @@ export default function G5DissolutionTempModule(props: ExperimentModuleProps) {
     const nextPoints = groupRecord.dataPoints.map((pt, i) =>
       i === idx ? { ...pt, yValue: maxDissolvable } : pt
     );
+    const nextSimLog = [
+      ...(groupRecord.simulationLog ?? []),
+      {
+        xValue: waterTemp,
+        simulatedY: maxDissolvable,
+        recordedAt: new Date().toISOString(),
+      },
+    ];
     onUpdateRecord({
       dataPoints: nextPoints,
+      simulationLog: nextSimLog,
+      revisionCount: (groupRecord.revisionCount ?? 0) + 1,
       status:
         groupRecord.status === "completed" ? "completed" : "measuring",
     });
